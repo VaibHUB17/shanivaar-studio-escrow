@@ -15,8 +15,8 @@ This repository contains the smart contract implementation and comprehensive tes
 ## 2. Run From a Clean Clone (5 Commands or Fewer)
 
 ```bash
-git clone https://github.com/VaibHUB17/hikari-assessment.git
-cd hikari-assessment
+git clone https://github.com/VaibHUB17/shanivaar-studio-escrow.git
+cd shanivaar-studio-escrow
 git submodule update --init --recursive
 forge build
 forge test
