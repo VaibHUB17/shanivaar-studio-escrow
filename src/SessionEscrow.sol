@@ -4,27 +4,47 @@ pragma solidity ^0.8.24;
 import { AccessControl } from "@openzeppelin/contracts/access/AccessControl.sol";
 import { Pausable } from "@openzeppelin/contracts/utils/Pausable.sol";
 import { IERC20 } from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+import { SafeERC20 } from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import { ISessionEscrow } from "./interfaces/ISessionEscrow.sol";
 
 /// @title SessionEscrow
 /// @notice Manages session creation, seat bookings, cancellations, refunds, and earnings claims for Shanivaar Studio.
 /// @dev Implements Appendix A ISessionEscrow interface with strict Checks-Effects-Interactions ordering.
 contract SessionEscrow is AccessControl, Pausable, ISessionEscrow {
+    using SafeERC20 for IERC20;
+
     // --- Constants ---
+    /// @notice Minimum time between session creation and its start.
     uint256 public constant MIN_LEAD_TIME = 72 hours;
+    /// @notice Notice at or above which a learner cancellation is refunded in full.
     uint256 public constant FULL_REFUND_NOTICE = 48 hours;
+    /// @notice Notice below which a learner can no longer cancel.
     uint256 public constant CANCEL_CUTOFF = 6 hours;
+    /// @notice Delay after the start before the instructor can claim earnings.
     uint256 public constant CLAIM_DELAY = 24 hours;
+    /// @notice Share of the seat price refunded on a late (6h to 48h) cancellation, in bps.
     uint256 public constant LATE_REFUND_BPS = 6_000;
+    /// @notice Minimum seat price in units (1.00 credit).
     uint256 public constant MIN_SEAT_PRICE = 100;
+    /// @notice Maximum seat price in units (5,000.00 credits).
     uint256 public constant MAX_SEAT_PRICE = 500_000;
+    /// @notice Minimum seats per session.
+    uint16 public constant MIN_CAPACITY = 1;
+    /// @notice Maximum seats per session.
     uint16 public constant MAX_CAPACITY = 40;
+    /// @notice Platform fee applied at deployment, in bps (3.5%).
     uint16 public constant DEFAULT_FEE_BPS = 350;
+    /// @notice Upper bound for the platform fee, in bps (12%).
     uint16 public constant MAX_FEE_BPS = 1_200;
+    /// @notice Basis-point denominator (100%).
     uint256 public constant BPS_DENOMINATOR = 10_000;
+    /// @notice First id assigned to sessions and bookings; 0 is never a valid id.
+    uint256 private constant FIRST_ID = 1;
 
     // --- Role Constants ---
+    /// @notice Role allowed to pause and unpause the escrow.
     bytes32 public constant override PAUSER_ROLE = keccak256("PAUSER_ROLE");
+    /// @notice Role allowed to create sessions.
     bytes32 public constant override INSTRUCTOR_ROLE = keccak256("INSTRUCTOR_ROLE");
 
     // --- Data Structures ---
@@ -50,7 +70,9 @@ contract SessionEscrow is AccessControl, Pausable, ISessionEscrow {
     }
 
     // --- Immutables & State Variables ---
+    /// @notice The StudioCredit token held in escrow.
     IERC20 public immutable token;
+    /// @notice Recipient of platform fees.
     address public immutable treasury;
 
     uint16 private _feeBps;
@@ -72,8 +94,8 @@ contract SessionEscrow is AccessControl, Pausable, ISessionEscrow {
         token = IERC20(token_);
         treasury = treasury_;
         _feeBps = DEFAULT_FEE_BPS;
-        _nextSessionId = 1;
-        _nextBookingId = 1;
+        _nextSessionId = FIRST_ID;
+        _nextBookingId = FIRST_ID;
 
         _grantRole(DEFAULT_ADMIN_ROLE, admin);
         _grantRole(PAUSER_ROLE, admin);
@@ -100,7 +122,7 @@ contract SessionEscrow is AccessControl, Pausable, ISessionEscrow {
         if (seatPrice < MIN_SEAT_PRICE || seatPrice > MAX_SEAT_PRICE) {
             revert InvalidPrice(seatPrice);
         }
-        if (capacity < 1 || capacity > MAX_CAPACITY) {
+        if (capacity < MIN_CAPACITY || capacity > MAX_CAPACITY) {
             revert InvalidCapacity(capacity);
         }
 
@@ -129,12 +151,13 @@ contract SessionEscrow is AccessControl, Pausable, ISessionEscrow {
     function book(uint256 sessionId, address attendee)
         external
         override
-        whenNotPaused
         returns (uint256 bookingId)
     {
-        if (sessionId == 0 || sessionId >= _nextSessionId) {
+        if (sessionId < FIRST_ID || sessionId >= _nextSessionId) {
             revert UnknownSession(sessionId);
         }
+        // Unknown ids revert before the pause check (Appendix A ordering rule).
+        _requireNotPaused();
 
         Session storage session = _sessions[sessionId];
 
@@ -165,8 +188,7 @@ contract SessionEscrow is AccessControl, Pausable, ISessionEscrow {
 
         emit Booked(bookingId, sessionId, msg.sender, attendee, session.seatPrice);
 
-        bool success = token.transferFrom(msg.sender, address(this), session.seatPrice);
-        require(success);
+        token.safeTransferFrom(msg.sender, address(this), session.seatPrice);
     }
 
     /// @notice Cancels an active booking and issues a full or partial refund.
@@ -176,10 +198,12 @@ contract SessionEscrow is AccessControl, Pausable, ISessionEscrow {
     /// - notice < 6 hours or session started: reverts TooLateToCancel.
     /// Refund is always returned to the original payer (D3).
     /// @param bookingId The ID of the booking to cancel.
-    function cancelBooking(uint256 bookingId) external override whenNotPaused {
-        if (bookingId == 0 || bookingId >= _nextBookingId) {
+    function cancelBooking(uint256 bookingId) external override {
+        if (bookingId < FIRST_ID || bookingId >= _nextBookingId) {
             revert UnknownBooking(bookingId);
         }
+        // Unknown ids revert before the pause check (Appendix A ordering rule).
+        _requireNotPaused();
 
         Booking storage booking = _bookings[bookingId];
         if (booking.status != BookingStatus.Active) {
@@ -227,8 +251,7 @@ contract SessionEscrow is AccessControl, Pausable, ISessionEscrow {
         emit BookingCancelled(bookingId, msg.sender, refundTo, refunded, retained);
 
         if (refunded > 0) {
-            bool success = token.transfer(refundTo, refunded);
-            require(success);
+            token.safeTransfer(refundTo, refunded);
         }
     }
 
@@ -236,7 +259,7 @@ contract SessionEscrow is AccessControl, Pausable, ISessionEscrow {
     /// @dev Restricted to the session's recorded instructor. Active bookings become eligible for full refund via claimRefund.
     /// @param sessionId The ID of the session to cancel.
     function cancelSession(uint256 sessionId) external override {
-        if (sessionId == 0 || sessionId >= _nextSessionId) {
+        if (sessionId < FIRST_ID || sessionId >= _nextSessionId) {
             revert UnknownSession(sessionId);
         }
 
@@ -260,10 +283,12 @@ contract SessionEscrow is AccessControl, Pausable, ISessionEscrow {
     /// @dev Pull-based refund. Reverts if session was not cancelled or booking is not active.
     /// Refund is paid to the original payer (D3). Caller can be payer or attendee.
     /// @param bookingId The ID of the booking to refund.
-    function claimRefund(uint256 bookingId) external override whenNotPaused {
-        if (bookingId == 0 || bookingId >= _nextBookingId) {
+    function claimRefund(uint256 bookingId) external override {
+        if (bookingId < FIRST_ID || bookingId >= _nextBookingId) {
             revert UnknownBooking(bookingId);
         }
+        // Unknown ids revert before the pause check (Appendix A ordering rule).
+        _requireNotPaused();
 
         Booking storage booking = _bookings[bookingId];
         Session storage session = _sessions[booking.sessionId];
@@ -282,17 +307,18 @@ contract SessionEscrow is AccessControl, Pausable, ISessionEscrow {
 
         emit RefundClaimed(bookingId, refundTo, amount);
 
-        bool success = token.transfer(refundTo, amount);
-        require(success);
+        token.safeTransfer(refundTo, amount);
     }
 
     /// @notice Claims session earnings 24 hours after session start.
     /// @dev Restricted to the recorded instructor. Deducts platform fee and transfers net takings.
     /// @param sessionId The ID of the session whose earnings are being claimed.
-    function claimEarnings(uint256 sessionId) external override whenNotPaused {
-        if (sessionId == 0 || sessionId >= _nextSessionId) {
+    function claimEarnings(uint256 sessionId) external override {
+        if (sessionId < FIRST_ID || sessionId >= _nextSessionId) {
             revert UnknownSession(sessionId);
         }
+        // Unknown ids revert before the pause check (Appendix A ordering rule).
+        _requireNotPaused();
 
         Session storage session = _sessions[sessionId];
 
@@ -323,7 +349,7 @@ contract SessionEscrow is AccessControl, Pausable, ISessionEscrow {
 
         // Fee ceiling: ceil(gross * feeBps / 10_000)
         uint256 fee = 0;
-        if (gross > 0 && feeBpsApplied > 0) {
+        if (feeBpsApplied > 0) {
             fee = (gross * feeBpsApplied + BPS_DENOMINATOR - 1) / BPS_DENOMINATOR;
         }
         uint256 net = gross - fee;
@@ -331,12 +357,10 @@ contract SessionEscrow is AccessControl, Pausable, ISessionEscrow {
         emit EarningsClaimed(sessionId, session.instructor, gross, feeBpsApplied, fee, net);
 
         if (fee > 0) {
-            bool feeSuccess = token.transfer(treasury, fee);
-            require(feeSuccess);
+            token.safeTransfer(treasury, fee);
         }
         if (net > 0) {
-            bool netSuccess = token.transfer(session.instructor, net);
-            require(netSuccess);
+            token.safeTransfer(session.instructor, net);
         }
     }
 
@@ -377,7 +401,7 @@ contract SessionEscrow is AccessControl, Pausable, ISessionEscrow {
     /// @param sessionId The ID of the session to inspect.
     /// @return Available seats.
     function seatsLeft(uint256 sessionId) external view override returns (uint16) {
-        if (sessionId == 0 || sessionId >= _nextSessionId) {
+        if (sessionId < FIRST_ID || sessionId >= _nextSessionId) {
             revert UnknownSession(sessionId);
         }
         return _sessions[sessionId].seatsLeft;
@@ -388,7 +412,7 @@ contract SessionEscrow is AccessControl, Pausable, ISessionEscrow {
     /// @param bookingId The ID of the booking to query.
     /// @return The status of the booking.
     function bookingStatus(uint256 bookingId) external view override returns (BookingStatus) {
-        if (bookingId == 0 || bookingId >= _nextBookingId) {
+        if (bookingId < FIRST_ID || bookingId >= _nextBookingId) {
             return BookingStatus.None;
         }
         return _bookings[bookingId].status;

@@ -137,8 +137,11 @@ contract StudioCreditTest is Test {
     }
 
     function test_StudioCredit_constructorZeroAddress() public {
-        vm.expectRevert(IStudioCredit.ZeroAddress.selector);
-        new StudioCredit(address(0));
+        try new StudioCredit(address(0)) {
+            fail();
+        } catch (bytes memory reason) {
+            assertEq(bytes4(reason), IStudioCredit.ZeroAddress.selector);
+        }
     }
 
     function test_StudioCredit_decimals() public view {

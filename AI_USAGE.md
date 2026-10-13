@@ -1,7 +1,7 @@
 # AI Usage Disclosure (AI_USAGE.md)
 
 ## 1. Tools Used and Workflow
-- **Model / Tool**: Gemini 3.8 Flash (High) via Antigravity Coding Assistant.
+- **Model / Tool**: Gemini 3.8 Flash (High) via Antigravity Coding Assistant; Claude Opus 5.5 via Claude Code for a final spec-compliance review and the fixes it found (see Output 4).
 - **Purpose**:
   - Drafting interface declarations and contract skeletons matching Appendix A.
   - Reviewing Checks-Effects-Interactions (CEI) sequencing and custom error selector definitions.
@@ -25,3 +25,7 @@
 ### Output 3: Reentrancy vs Pull-Refunds (Changed)
 - **Initial AI Output**: Suggestion to push refunds automatically to all learners inside `cancelSession()`.
 - **Why Rejected**: Rejected because an instructor cancelling a session with 40 attendees could hit block gas limits or be griefed by a reverting contract learner. Retained the strict pull-based model mandated by specification `R-REFUND` via individual `claimRefund()` calls.
+
+### Output 4: Hollow T3 test and pause ordering (Verified, then fixed)
+- **AI Output**: A review with Claude Code flagged that `test_T3_allCustomErrorsCovered` passed using only 8,900 gas, and that the `whenNotPaused` modifier ran before the unknown-id checks.
+- **Verification Method**: A `forge test -vvvv` trace showed the test ending at its first `vm.expectRevert` + `new SessionEscrow(address(0), ...)`, so the other ~19 checks never ran. With that line removed, the rest of T3 passed at about 2M gas. The constructor checks now use `try`/`catch` in `test_T3_constructorZeroAddress`; the pause check now runs after the id check, pinned by `test_T8_unknownIdRevertsBeforePauseCheck`.

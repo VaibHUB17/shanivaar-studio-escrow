@@ -6,7 +6,9 @@ pragma solidity ^0.8.24;
 /// reverts ZeroAddress() if admin is zero.
 /// name() == "Studio Credit", symbol() == "SCRD", decimals() == 2.
 interface IStudioCredit {
+    /// @notice Emitted when credits are issued to `to` by `issuer`.
     event Issued(address indexed to, uint256 amount, address indexed issuer);
+    /// @notice Emitted once, when the escrow address is set.
     event EscrowSet(address indexed newEscrow);
 
     error ZeroAmount();

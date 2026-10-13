@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.24;
 
-import { Test } from "forge-std/Test.sol";
+import { Test, Vm } from "forge-std/Test.sol";
 import { IAccessControl } from "@openzeppelin/contracts/access/IAccessControl.sol";
 import { Pausable } from "@openzeppelin/contracts/utils/Pausable.sol";
 import { StudioCredit } from "../src/StudioCredit.sol";
@@ -180,13 +180,27 @@ contract SessionEscrowTest is Test {
     // ==========================================
     // T3: Comprehensive Custom Errors Coverage
     // ==========================================
+    // A reverting `new` under vm.expectRevert ends the calling test early (it previously
+    // skipped every check after it in test_T3_allCustomErrorsCovered), so use try/catch.
+    function test_T3_constructorZeroAddress() public {
+        _assertDeployRevertsZeroAddress(address(0), treasury, admin);
+        _assertDeployRevertsZeroAddress(address(token), address(0), admin);
+        _assertDeployRevertsZeroAddress(address(token), treasury, address(0));
+    }
+
+    function _assertDeployRevertsZeroAddress(address tok, address treas, address adm) internal {
+        try new SessionEscrow(tok, treas, adm) {
+            fail();
+        } catch (bytes memory reason) {
+            assertEq(bytes4(reason), ISessionEscrow.ZeroAddress.selector);
+        }
+    }
+
     function test_T3_allCustomErrorsCovered() public {
         uint64 startT = 1795860000;
         vm.warp(1795341600);
 
-        // 1. ZeroAddress
-        vm.expectRevert(ISessionEscrow.ZeroAddress.selector);
-        new SessionEscrow(address(0), treasury, admin);
+        // 1. ZeroAddress: see test_T3_constructorZeroAddress and step 6 below
 
         // 2. StartTooSoon
         vm.prank(ira);
@@ -616,16 +630,36 @@ contract SessionEscrowTest is Test {
         vm.warp(cancelTime);
 
         uint256 balBefore = fuzzToken.balanceOf(asha);
+        vm.recordLogs();
         vm.prank(asha);
         fuzzEscrow.cancelBooking(1);
-        uint256 balAfter = fuzzToken.balanceOf(asha);
+        uint256 refunded = fuzzToken.balanceOf(asha) - balBefore;
 
-        uint256 refunded = balAfter - balBefore;
-        uint256 expectedRefund = (seatPrice * 6_000) / 10_000;
-        uint256 retained = seatPrice - refunded;
+        // Read refunded/retained independently from the event and the escrow's balance.
+        (uint256 evRefunded, uint256 evRetained) = _bookingCancelledAmounts(address(fuzzEscrow));
+        uint256 retainedInEscrow = fuzzToken.balanceOf(address(fuzzEscrow));
 
-        assertEq(refunded, expectedRefund);
-        assertEq(refunded + retained, seatPrice);
+        assertEq(evRefunded, refunded);
+        assertEq(evRetained, retainedInEscrow);
+        assertEq(refunded + retainedInEscrow, seatPrice);
+
+        // D1 direction: refund is floor(60%), so the fractional unit goes to the instructor.
+        assertLe(refunded * 10_000, seatPrice * 6_000);
+        assertGt((refunded + 1) * 10_000, seatPrice * 6_000);
+    }
+
+    function _bookingCancelledAmounts(address emitter)
+        internal
+        returns (uint256 refunded, uint256 retained)
+    {
+        Vm.Log[] memory logs = vm.getRecordedLogs();
+        bytes32 sig = keccak256("BookingCancelled(uint256,address,address,uint256,uint256)");
+        for (uint256 i = 0; i < logs.length; i++) {
+            if (logs[i].emitter == emitter && logs[i].topics[0] == sig) {
+                return abi.decode(logs[i].data, (uint256, uint256));
+            }
+        }
+        revert("BookingCancelled not emitted");
     }
 
     // ==========================================
@@ -729,6 +763,34 @@ contract SessionEscrowTest is Test {
         assertEq(token.balanceOf(asha), 5000);
     }
 
+    function test_T8_createSessionAllowedWhilePaused() public {
+        vm.warp(1795341600);
+        vm.prank(admin);
+        escrow.pause();
+
+        // createSession moves no credits, so it stays open while paused.
+        vm.prank(ira);
+        uint256 sId = escrow.createSession(1795860000, 1250, 3);
+        assertEq(sId, 1);
+        assertEq(escrow.seatsLeft(sId), 3);
+    }
+
+    function test_T8_unknownIdRevertsBeforePauseCheck() public {
+        vm.prank(admin);
+        escrow.pause();
+
+        vm.expectRevert(abi.encodeWithSelector(ISessionEscrow.UnknownSession.selector, 0));
+        escrow.book(0, asha);
+        vm.expectRevert(abi.encodeWithSelector(ISessionEscrow.UnknownSession.selector, 7));
+        escrow.book(7, asha);
+        vm.expectRevert(abi.encodeWithSelector(ISessionEscrow.UnknownSession.selector, 7));
+        escrow.claimEarnings(7);
+        vm.expectRevert(abi.encodeWithSelector(ISessionEscrow.UnknownBooking.selector, 7));
+        escrow.cancelBooking(7);
+        vm.expectRevert(abi.encodeWithSelector(ISessionEscrow.UnknownBooking.selector, 7));
+        escrow.claimRefund(7);
+    }
+
     // ==========================================
     // T9: Dedicated Decision Tests
     // ==========================================
@@ -807,6 +869,41 @@ contract SessionEscrowTest is Test {
         // Refund goes to payer Bhavesh, NOT attendee Chitra
         assertEq(token.balanceOf(bhavesh), 1000);
         assertEq(token.balanceOf(chitra), 0);
+    }
+
+    function test_D3_giftBookingClaimRefundAndStranger() public {
+        uint64 startT = 1795860000;
+        vm.warp(1795341600);
+        vm.prank(ira);
+        uint256 sId = escrow.createSession(startT, 1000, 2);
+
+        _issueAndApprove(bhavesh, 1000);
+        vm.warp(1795428000);
+        vm.prank(bhavesh);
+        uint256 bId = escrow.book(sId, chitra);
+
+        // A stranger can never cancel
+        vm.prank(dev);
+        vm.expectRevert(abi.encodeWithSelector(ISessionEscrow.NotBookingParty.selector, bId, dev));
+        escrow.cancelBooking(bId);
+
+        vm.prank(ira);
+        escrow.cancelSession(sId);
+
+        // A stranger can never claim the refund
+        vm.prank(dev);
+        vm.expectRevert(abi.encodeWithSelector(ISessionEscrow.NotBookingParty.selector, bId, dev));
+        escrow.claimRefund(bId);
+
+        // Attendee claims; money goes to the payer
+        vm.expectEmit(true, true, false, true, address(escrow));
+        emit ISessionEscrow.RefundClaimed(bId, bhavesh, 1000);
+        vm.prank(chitra);
+        escrow.claimRefund(bId);
+
+        assertEq(token.balanceOf(bhavesh), 1000);
+        assertEq(token.balanceOf(chitra), 0);
+        assertEq(uint8(escrow.bookingStatus(bId)), uint8(ISessionEscrow.BookingStatus.Refunded));
     }
 
     function test_SessionEscrow_bookingStatus_views() public view {

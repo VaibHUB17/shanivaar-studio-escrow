@@ -12,6 +12,7 @@ interface ISessionEscrow {
         Refunded
     }
 
+    /// @notice Emitted when an instructor creates a session.
     event SessionCreated(
         uint256 indexed sessionId,
         address indexed instructor,
@@ -20,6 +21,7 @@ interface ISessionEscrow {
         uint16 capacity
     );
 
+    /// @notice Emitted when a seat is booked; `payer` funded it, `attendee` holds the seat.
     event Booked(
         uint256 indexed bookingId,
         uint256 indexed sessionId,
@@ -28,6 +30,7 @@ interface ISessionEscrow {
         uint256 price
     );
 
+    /// @notice Emitted when a booking is cancelled; `refunded + retained` equals the seat price.
     event BookingCancelled(
         uint256 indexed bookingId,
         address indexed by,
@@ -36,8 +39,11 @@ interface ISessionEscrow {
         uint256 retained
     );
 
+    /// @notice Emitted when an instructor cancels a whole session.
     event SessionCancelled(uint256 indexed sessionId, address indexed by);
+    /// @notice Emitted when a booking in a cancelled session is refunded in full.
     event RefundClaimed(uint256 indexed bookingId, address indexed to, uint256 amount);
+    /// @notice Emitted when an instructor claims earnings; `fee + net` equals `gross`.
     event EarningsClaimed(
         uint256 indexed sessionId,
         address indexed instructor,
@@ -47,6 +53,7 @@ interface ISessionEscrow {
         uint256 net
     );
 
+    /// @notice Emitted when the admin changes the platform fee.
     event FeeBpsSet(uint16 oldBps, uint16 newBps);
 
     error ZeroAddress();

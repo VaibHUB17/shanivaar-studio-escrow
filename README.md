@@ -23,6 +23,7 @@ forge test
 ```
 
 To verify code formatting compliance:
+
 ```bash
 forge fmt --check
 ```
@@ -41,21 +42,22 @@ forge fmt --check
 
 All tests are implemented in `test/StudioCredit.t.sol` and `test/SessionEscrow.t.sol` and pass with **0 skipped tests**:
 
-- **`T1_workedExample`**: Replays the Section 5 worked example across all 12 timestamps using `vm.warp`, validating exact intermediate balances, earnings events, and credit conservation.
-- **`T2_movementRules`**: Verifies `CreditsNotTransferable` reverts on learner-to-learner `transfer` and `transferFrom`, while escrow interactions succeed.
-- **`T3_allCustomErrorsCovered`**: Triggers all 4 `StudioCredit` and all 19 `SessionEscrow` custom errors by selector.
-- **`T4_accessControlMatrix`**: Validates role gating for `DEFAULT_ADMIN_ROLE`, `ISSUER_ROLE`, `PAUSER_ROLE`, and `INSTRUCTOR_ROLE`.
-- **`T5_boundaries`**: Exhaustively tests all boundary conditions to the exact second ($T - 72\text{h}$, $T - 48\text{h}$, $T - 6\text{h}$, $T$, $T + 24\text{h}$).
-- **`T6_lateSplit`**: Property-based fuzz test across prices $[100, 500\,000]$ verifying $\text{refunded} + \text{retained} == \text{seatPrice}$.
-- **`T7_feeCalculation`**: Property-based fuzz test across prices and fee basis points verifying ceiling division and balance conservation.
-- **`T8_pauseMatrix`**: Verifies that `book`, `claimEarnings`, `cancelBooking`, and `claimRefund` are frozen during pause, satisfying `R-PAUSE`.
-- **`T9_decisionTests`**: Dedicated unit tests pinning Decisions D1, D2, and D3 (`test_D1_fractionalRefundRounding`, `test_D2_whichFeeRateApplies`, `test_D3_giftBookingCancellationAndRefund`).
+- **T1** `test_T1_workedExample`: Replays the Section 5 worked example across all 12 timestamps using `vm.warp`, asserting `seatsLeft` after every booking and cancellation, the `EarningsClaimed` event, and where every credit ends up.
+- **T2** `test_T2_*` (in `StudioCredit.t.sol`): `CreditsNotTransferable` on learner-to-learner `transfer` and `transferFrom`, successful escrow pulls and payouts, and `issue` / `setEscrow` access control and validation.
+- **T3** `test_T3_allCustomErrorsCovered`, `test_T3_constructorZeroAddress`, plus the `StudioCredit.t.sol` tests: all 4 `StudioCredit` and all 19 `SessionEscrow` custom errors.
+- **T4** `test_T4_accessControlMatrix`: Role gating for `DEFAULT_ADMIN_ROLE`, `PAUSER_ROLE`, `INSTRUCTOR_ROLE`, and the per-session instructor checks.
+- **T5** `test_T5_boundary_*`: Every Section 6 boundary pair, to the exact second.
+- **T6** `testFuzz_T6_lateSplit`: Prices in $[100, 500\,000]$ across the whole 60% tier; checks `refunded + retained == seatPrice` from balances and the `BookingCancelled` event, and the D1 floor direction.
+- **T7** `testFuzz_T7_feeCalculation`: Prices and fee bps; checks ceiling-division bounds and balance conservation.
+- **T8** `test_T8_pauseMatrix`, `test_T8_createSessionAllowedWhilePaused`, `test_T8_unknownIdRevertsBeforePauseCheck`: `book`, `claimEarnings`, `cancelBooking` and `claimRefund` freeze while paused; `createSession` and `cancelSession` stay open; unknown ids still revert `UnknownSession` / `UnknownBooking` first.
+- **T9** `test_D1_fractionalRefundRounding`, `test_D2_whichFeeRateApplies`, `test_D3_giftBookingCancellationAndRefund`, `test_D3_giftBookingClaimRefundAndStranger`.
 
 ---
 
 ## 5. Architectural Decisions & Documentation
 
 See [DECISIONS.md](DECISIONS.md) for in-depth coverage of:
+
 - **Part 1**: Decisions D1, D2, and D3 with rejected alternatives and test names.
 - **Part 2**: Analysis of instructor no-shows, trust assumptions, and attack vectors.
 - **Part 3**: Conflicts and specification gaps (including the escrow balance remainder from cancelled sessions).
@@ -66,10 +68,11 @@ See [AI_USAGE.md](AI_USAGE.md) for full disclosure of AI tooling, prompts, and v
 
 ---
 
-## 6. Optional Extras Attempted & Next Steps
+## 6. Optional Extras, Unfinished Work & Next Steps
 
-- **Attempted**: Complete coverage of all foundational and fuzz test tiers (T1 through T9).
-- **Future Work**:
-  1. Add an invariant handler test suite (`StdInvariant`) driving randomized caller actions over time.
-  2. Implement an on-chain attendance verification mechanism (e.g. attendee QR code / signature check-in) to eliminate trust in instructor physical presence.
-  3. Implement a residual penalty distribution sweep for cancelled sessions with retained late-cancel balances.
+- **Optional extra attempted**: None (S1–S3 not attempted).
+- **Unfinished**: Nothing from T1–T9 is outstanding.
+- **Next steps**:
+  1. S1: a `StdInvariant` handler suite with ghost accounting (escrow balance ≥ amount owed, `totalSupply` == total issued).
+  2. Let a learner who cancelled late reclaim the retained part if the instructor later cancels the session, so the escrow always ends at 0 (DECISIONS Part 3.1).
+  3. A dispute window before `CLAIM_DELAY`, backed by attendee check-ins, to handle instructor no-shows (DECISIONS Part 2).

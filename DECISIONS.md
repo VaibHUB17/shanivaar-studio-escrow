@@ -2,63 +2,52 @@
 
 ## Part 1: Decisions D1, D2, and D3
 
-### Decision D1: Fractional Unit Allocation on Late Cancellations
-- **Choice**: The cancelling learner receives the integer division floor ($\lfloor \text{seatPrice} \times 0.6 \rfloor$), and the remaining fractional unit is retained for the instructor. For example, with $\text{seatPrice} = 1,001$, the learner receives $600$ units and the instructor retains $401$ units.
-- **Why**: In Solidity, integer division truncates towards zero naturally. In a late cancellation (between 6 and 48 hours before session start), the learner is breaking a reservation window, while the instructor has already committed schedule, studio preparation, and capacity. Rewarding the non-cancelling instructor with the odd fractional unit aligns incentives against frivolous late cancellations and guarantees that $\text{refunded} + \text{retained} == \text{seatPrice}$ without math overflow or fractional leaks.
-- **Alternative Rejected**: Rounding up the refund for the learner ($\lceil \text{seatPrice} \times 0.6 \rceil = 601$, instructor retains $400$). Rejected because favoring the cancelling party reduces the instructor's economic protection and requires additional custom ceiling logic.
-- **Pinned Test**: `test_D1_fractionalRefundRounding` (in `test/SessionEscrow.t.sol`) and fuzz test `testFuzz_T6_lateSplit`.
+### D1: Fractional unit on late cancellations
+- **Choice**: The learner receives `floor(seatPrice × 60%)`; the fractional unit stays with the instructor. A 1,001 seat refunds 600 and retains 401.
+- **Why**: The learner is the party breaking the booking inside the late window, while the instructor has already committed time and capacity. Floor division also guarantees `refunded + retained == seatPrice` with no leftover dust.
+- **Rejected**: Rounding the refund up (601 / 400). It rewards the cancelling party at the instructor's expense.
+- **Tests**: `test_D1_fractionalRefundRounding`, `testFuzz_T6_lateSplit`.
 
----
+### D2: Which fee rate applies
+- **Choice**: The fee rate is snapshotted at session creation (`feeBpsAtCreation`) and used at claim time. `feeBps()` still returns the new value immediately.
+- **Why**: Instructors price a workshop against the commission in force when they publish it. A later change should not apply retroactively to income already booked.
+- **Rejected**: The live rate at claim time. It lets an admin raise the fee to 12% just before a large payout.
+- **Test**: `test_D2_whichFeeRateApplies`.
 
-### Decision D2: Platform Fee Rate Application
-- **Choice**: The platform fee rate is snapshotted and locked at session creation time (`feeBpsAtCreation`).
-- **Why**: Escrows operate on predictable terms of service. When an instructor publishes a workshop, they do so based on the agreed platform commission rate at that moment. Allowing administrative fee increases between session publishing and the claim window (which can be days or weeks later) would expose instructors to surprise retroactive fee increases.
-- **Alternative Rejected**: Applying the live administrative `feeBps` at the time `claimEarnings()` is executed. Rejected because it introduces administrative hold-up risk where a platform admin could temporarily hike fees to the 12% cap just before major workshop payouts occur.
-- **Pinned Test**: `test_D2_whichFeeRateApplies` (in `test/SessionEscrow.t.sol`).
-
----
-
-### Decision D3: Gift Bookings Cancellation & Refund Authority
-- **Choice**: Both the original `payer` and the registered `attendee` are authorized to invoke `cancelBooking()` and `claimRefund()`, but all refunded credits are **strictly transferred to the `payer`'s wallet**. A stranger who is neither payer nor attendee reverts `NotBookingParty`.
-- **Why**: The attendee is the person attending in person and knows first-hand if their personal schedule conflicts. However, because the payer contributed their personal credit balance to purchase the gift, the financial capital belongs to the payer. Returning funds to the attendee would create an attack vector where recipients convert non-transferable gift bookings into liquid personal credits.
-- **Alternative Rejected**: Permitting only the payer to cancel. Rejected because if the gift recipient falls ill, requiring the payer to coordinate the cancellation creates unnecessary UX friction and could cause the booking to miss the 6-hour cancellation cutoff.
-- **Pinned Test**: `test_D3_giftBookingCancellationAndRefund` (in `test/SessionEscrow.t.sol`).
+### D3: Gift bookings
+- **Choice**: Both payer and attendee may call `cancelBooking` and `claimRefund`; all refunds go to the **payer**. Anyone else reverts `NotBookingParty`.
+- **Why**: The attendee knows first-hand when they cannot attend, so they should be able to cancel before the 6-hour cutoff. The credits belong to the payer, and paying the attendee would let a gift be turned into the recipient's own credits.
+- **Rejected**: Payer-only cancellation. A sick attendee would have to reach the payer in time.
+- **Tests**: `test_D3_giftBookingCancellationAndRefund`, `test_D3_giftBookingClaimRefundAndStranger`.
 
 ---
 
 ## Part 2: No-Shows
 
-**Three-Question Analysis:**
-1. **What the contracts do**: The smart contracts do not track physical attendance. If a learner does not attend and fails to cancel before the 6-hour cutoff, their full seat payment is credited to the instructor's earnings. Conversely, if an instructor fails to appear, the contract cannot autonomously detect it, and earnings become claimable 24 hours after start time.
-2. **Who must be trusted**: The system currently trusts the instructor not to abandon an in-person session, and trusts the platform off-chain customer support/admin to intervene if fraud occurs.
-3. **What could be abused**: A malicious instructor could schedule phantom sessions, collect bookings, never attend the venue, and withdraw the net earnings 24 hours later. To prevent this without full decentralization, off-chain check-ins (e.g. attendee QR code multi-signature or an escrow dispute window prior to `CLAIM_DELAY`) should be integrated.
+The contracts do nothing about no-shows: a learner who misses the session without cancelling pays in full, and an instructor who never turns up can still claim 24 hours after the start. Learners must trust instructors to deliver, and both must trust the platform to vet instructors (admin grants `INSTRUCTOR_ROLE`) and handle disputes off-chain. The obvious abuse is a phantom session: an instructor collects bookings, never appears, and claims. A dispute window before `CLAIM_DELAY` ends, backed by attendee check-ins, would be the next step.
 
 ---
 
-## Part 3: Conflicts and Gaps in the Specification
+## Part 3: Conflicts and Gaps
 
-1. **Retained Penalties in Cancelled Sessions**: When a session has retained late-cancellation penalties (e.g. Farhan cancels for 480 refund, leaving 320 retained) and the instructor subsequently cancels the entire session, `claimEarnings()` reverts with `SessionNotActive`. As observed in the Section 5 worked example (T1), the 320 credits remain in escrow. **Resolution**: The contract strictly adheres to `SessionNotActive` on cancelled session claims; in a production upgrade, a treasury sweep or prorated compensation function would distribute residual retained penalties.
-2. **Cancellation Freeze under Contract Pause**: Stated requirement `R-PAUSE` mandates that *"no credits may enter or leave it"*. Pausing freezes `cancelBooking` and `claimRefund`. If an escrow is paused for 48 hours, a learner's cancellation notice window could expire unfairly. **Resolution**: Adhered strictly to `R-PAUSE` by freezing all token-moving functions (`book`, `claimEarnings`, `cancelBooking`, `claimRefund`), while allowing non-financial `cancelSession`.
-3. **Duplicate Cancellations**: A session could be cancelled after individual learners have already cancelled. **Resolution**: Handled via state tracking—only bookings with status `Active` are refunded via `claimRefund()`, preventing double-refund exploits.
+1. **Retained penalties in a cancelled session.** If a learner cancels late and the instructor later cancels the session, `claimEarnings` reverts `SessionNotActive`, so the retained amount stays in escrow (320 credits in T1). **Did**: followed the spec and asserted the 320 in `test_T1_workedExample`. A follow-up would let that learner reclaim the retained part via `claimRefund`.
+2. **R-PAUSE vs. R-REFUND ("always").** No credits may leave while paused, so refunds pause too, and a learner's cancellation tier keeps running. **Did**: R-PAUSE wins; `book`, `cancelBooking`, `claimRefund` and `claimEarnings` all revert `EnforcedPause` (`test_T8_pauseMatrix`).
+3. **Functions that move no credits while paused.** **Did**: `createSession` and `cancelSession` stay open, so instructors can still schedule or cancel safely (`test_T8_createSessionAllowedWhilePaused`, `test_T8_pauseMatrix`).
+4. **Unknown ids vs. pause.** The "unknown id first" rule conflicts with a `whenNotPaused` modifier, which runs before the body. **Did**: the id check runs first, then `_requireNotPaused()` (`test_T8_unknownIdRevertsBeforePauseCheck`).
+5. **Burning.** OZ `_update` treats `to == address(0)` as a burn. **Did**: it reverts `CreditsNotTransferable`, so no path can destroy credits.
 
 ---
 
-## Part 4: Threat Model & Key Compromises
+## Part 4: Threat Model
 
-- **Compromised Admin Key**: A rogue admin could attempt to raise platform fees to drain instructor revenues.
-  - *Mitigation*: Hard cap enforced in code (`MAX_FEE_BPS = 1_200`, 12%), and fee rates locked per session at creation time (Decision D2). A multi-sig timelock is recommended for admin roles.
-- **Compromised Issuer Key**: An attacker with `ISSUER_ROLE` could mint infinite credits, diluting the economy.
-  - *Mitigation*: While the contract allows unconstrained issuance per spec, the token is non-transferable between learners (`R-NOTRANSFER`), restricting the attacker's ability to sell credits on secondary markets or drain external pools.
-- **Malicious Learner / Reentrancy**: A learner could attempt to reenter `cancelBooking()` to receive multiple refunds.
-  - *Mitigation*: Strict adherence to Checks-Effects-Interactions (CEI)—booking status is set to `Cancelled` and session counters are updated *before* invoking `token.transfer()`.
+- **Compromised pauser key**: can pause indefinitely, freezing every refund and payout. *Mitigation*: hold `PAUSER_ROLE` in a multisig, separate from the admin, with an off-chain unpause runbook; a maximum pause duration would be the code-level fix.
+- **Compromised admin or issuer key**: the admin can grant itself `ISSUER_ROLE` and `INSTRUCTOR_ROLE`, mint unlimited credits, fill every session, and run fake sessions. Raising the fee is capped at 12% and does not affect existing sessions (D2). *Mitigation*: put the admin behind a timelocked multisig and monitor `Issued` and `RoleGranted` events.
+- **Malicious instructor**: can collect bookings for a session they never hold and claim after 24 hours (Part 2), or cancel late to strand retained penalties (Part 3.1). *Mitigation*: KYC before granting `INSTRUCTOR_ROLE`, plus a dispute window before claims.
 
 ---
 
 ## Part 5: Invariants
 
-1. **Non-Transferability Invariant**: No token transfer can succeed between two non-escrow addresses where neither address is zero.
-   - *Mapped Test*: `test_T2_transferRule_learnerToLearnerReverts` and `test_T2_transferRule_transferFromLearnerToLearnerReverts`.
-2. **Cancellation Conservation Invariant**: For every cancelled booking, the sum of credits returned to the learner and credits retained for the instructor equals the original seat price ($\text{refunded} + \text{retained} == \text{seatPrice}$).
-   - *Mapped Test*: Property-based fuzz test `testFuzz_T6_lateSplit` across all price ranges $[100, 500\,000]$.
-3. **Fee Conservation Invariant**: For any claimed session, the sum of net instructor earnings and platform treasury fee strictly equals the session gross ($\text{net} + \text{fee} == \text{gross}$), and $\text{fee} \times 10\,000 \ge \text{gross} \times \text{feeBps}$.
-   - *Mapped Test*: Property-based fuzz test `testFuzz_T7_feeCalculation`.
+1. **No learner-to-learner movement**: a transfer succeeds only if it is a mint or touches the escrow. *Tests*: `test_T2_transferRule_learnerToLearnerReverts`, `test_T2_transferRule_transferFromLearnerToLearnerReverts`.
+2. **Cancellation conservation**: for every cancelled booking, `refunded + retained == seatPrice`, measured from balances and the event. *Test*: `testFuzz_T6_lateSplit`.
+3. **Fee conservation**: for every claim, `fee + net == gross` and the fee is the exact ceiling of `gross × feeBps / 10,000`. *Test*: `testFuzz_T7_feeCalculation`.
