@@ -74,11 +74,11 @@ See [AI_USAGE.md](AI_USAGE.md) for full disclosure of AI tooling, prompts, and v
   - Dropped duplicate `Booking.price` (refunds read immutable `session.seatPrice` directly).
   - Packed `uint64 sessionId` (8 bytes) + `address payer` (20 bytes) into Slot 0 (28 / 32 bytes).
   - Packed `address attendee` (20 bytes) + `BookingStatus status` (1 byte enum) into Slot 1 (21 / 32 bytes).
-  - **Result**: Reduced `Booking` storage footprint from 4 slots down to **2 slots**, saving $\approx 40,000$ gas on every `book()` call (~340k gas saved across the T1 worked example).
+  - **Result**: Reduced `Booking` storage footprint from 4 slots down to **2 slots**. Measured with `forge test --gas-report`, `book()` dropped from ~196k to ~130k gas (median), saving ≈66k gas (~34%) per booking, or ~330k across the 5 bookings in the T1 worked example.
 - **Deliberately Deferred (Full `Session` Repacking)**:
-  - Downcasting `seatPrice` or `retainedLateCancel` to `uint32` would save an additional slot, but couples safety to tight price limits ($MAX\_SEAT\_PRICE \le 500,000$).
+  - Downcasting `seatPrice` or `retainedLateCancel` to `uint32` would save an additional slot, but couples safety to tight price limits (`MAX_SEAT_PRICE` = 500,000).
   - Dropping `activeBookings` to derive it via `capacity - seatsLeft` adds hidden assumptions if seats are ever freed via alternative paths.
-  - Prioritized bulletproof arithmetic, explicit semantics, and readability over micro-optimizing admin paths.
+  - Prioritized bulletproof arithmetic, explicit semantics, and readability over squeezing extra slots out of `Session`.
 
 ---
 

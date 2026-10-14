@@ -49,5 +49,5 @@ The contracts do nothing about no-shows: a learner who misses the session withou
 ## Part 5: Invariants
 
 1. **No learner-to-learner movement**: a transfer succeeds only if it is a mint or touches the escrow. *Tests*: `test_T2_transferRule_learnerToLearnerReverts`, `test_T2_transferRule_transferFromLearnerToLearnerReverts`.
-2. **Cancellation conservation**: for every cancelled booking, `refunded + retained == seatPrice`, measured from balances and the event. *Test*: `testFuzz_T6_lateSplit`.
+2. **Cancellation conservation**: for every cancelled booking, `refunded + retained == seatPrice`, measured from balances and the event. Bookings do not store their own price: refunds read `session.seatPrice`, which is safe because the brief makes price immutable. *Test*: `testFuzz_T6_lateSplit`.
 3. **Fee conservation**: for every claim, `fee + net == gross` and the fee is the exact ceiling of `gross × feeBps / 10,000`. *Test*: `testFuzz_T7_feeCalculation`.
