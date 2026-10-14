@@ -68,7 +68,21 @@ See [AI_USAGE.md](AI_USAGE.md) for full disclosure of AI tooling, prompts, and v
 
 ---
 
-## 6. Optional Extras, Unfinished Work & Next Steps
+## 6. Gas Optimization & Storage Packing
+
+- **Implemented (Low-Risk 2-Slot `Booking` Packing)**:
+  - Dropped duplicate `Booking.price` (refunds read immutable `session.seatPrice` directly).
+  - Packed `uint64 sessionId` (8 bytes) + `address payer` (20 bytes) into Slot 0 (28 / 32 bytes).
+  - Packed `address attendee` (20 bytes) + `BookingStatus status` (1 byte enum) into Slot 1 (21 / 32 bytes).
+  - **Result**: Reduced `Booking` storage footprint from 4 slots down to **2 slots**, saving $\approx 40,000$ gas on every `book()` call (~340k gas saved across the T1 worked example).
+- **Deliberately Deferred (Full `Session` Repacking)**:
+  - Downcasting `seatPrice` or `retainedLateCancel` to `uint32` would save an additional slot, but couples safety to tight price limits ($MAX\_SEAT\_PRICE \le 500,000$).
+  - Dropping `activeBookings` to derive it via `capacity - seatsLeft` adds hidden assumptions if seats are ever freed via alternative paths.
+  - Prioritized bulletproof arithmetic, explicit semantics, and readability over micro-optimizing admin paths.
+
+---
+
+## 7. Optional Extras, Unfinished Work & Next Steps
 
 - **Optional extra attempted**: None (S1–S3 not attempted).
 - **Unfinished**: Nothing from T1–T9 is outstanding.

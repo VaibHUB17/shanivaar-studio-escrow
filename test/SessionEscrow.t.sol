@@ -650,6 +650,7 @@ contract SessionEscrowTest is Test {
 
     function _bookingCancelledAmounts(address emitter)
         internal
+        view
         returns (uint256 refunded, uint256 retained)
     {
         Vm.Log[] memory logs = vm.getRecordedLogs();

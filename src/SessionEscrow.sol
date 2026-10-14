@@ -62,10 +62,9 @@ contract SessionEscrow is AccessControl, Pausable, ISessionEscrow {
     }
 
     struct Booking {
-        uint256 sessionId;
+        uint64 sessionId;
         address payer;
         address attendee;
-        uint256 price;
         BookingStatus status;
     }
 
@@ -179,10 +178,11 @@ contract SessionEscrow is AccessControl, Pausable, ISessionEscrow {
 
         bookingId = _nextBookingId++;
         _bookings[bookingId] = Booking({
-            sessionId: sessionId,
+            // Casting sessionId to uint64 is safe because sessionId < _nextSessionId, which increments from 1
+            // forge-lint: disable-next-line(unsafe-typecast)
+            sessionId: uint64(sessionId),
             payer: msg.sender,
             attendee: attendee,
-            price: session.seatPrice,
             status: BookingStatus.Active
         });
 
@@ -231,15 +231,16 @@ contract SessionEscrow is AccessControl, Pausable, ISessionEscrow {
 
         uint256 refunded;
         uint256 retained;
+        uint256 seatPrice = session.seatPrice;
 
         if (notice >= FULL_REFUND_NOTICE) {
-            refunded = booking.price;
+            refunded = seatPrice;
             retained = 0;
         } else {
             // 6 hours <= notice < 48 hours: 60% refund, 40% retained
             // Decision D1: Fractional unit favors the instructor (integer division floors for learner)
-            refunded = (booking.price * LATE_REFUND_BPS) / BPS_DENOMINATOR;
-            retained = booking.price - refunded;
+            refunded = (seatPrice * LATE_REFUND_BPS) / BPS_DENOMINATOR;
+            retained = seatPrice - refunded;
         }
 
         booking.status = BookingStatus.Cancelled;
@@ -303,7 +304,7 @@ contract SessionEscrow is AccessControl, Pausable, ISessionEscrow {
 
         booking.status = BookingStatus.Refunded;
         address refundTo = booking.payer;
-        uint256 amount = booking.price;
+        uint256 amount = session.seatPrice;
 
         emit RefundClaimed(bookingId, refundTo, amount);
 
